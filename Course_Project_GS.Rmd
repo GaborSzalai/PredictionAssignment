@@ -1,0 +1,131 @@
+---
+title: "Machine Learning Course Project"
+author: "Gabor Szalai"
+date: "26 June 2016"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE,
+	cache = TRUE
+)
+```
+##Summary
+
+In this project, our main goal is to use sensory data gathered from accelerometers on the belt, forearm, arm, and dumbell of 6 participants in order to predict the quality of exercise (barbell lifts) they performed. The participants were asked to perform the exercise correctly and incorrectly in 5 different ways - this is indicated in the training data-set's 'classe' variable. More information on the project is available from the website here: http://groupware.les.inf.puc-rio.br/har
+
+After processing of the data, we used a range of manual and automated feature selection methods. We applied <b>random forest</b> machine learning algorithm on the selected features, using k-fold crossvalidation as well. The resulting model had very high accuracy with an <b>estimated error rate of 0.32%</b>. The subsequent prediction on the small test data-set resulted in <b>100% correct</b> predictions.
+
+##Loading in the datasets
+
+We start by loading in relevant packages and the training and test datasets.
+
+```{r}
+library(caret)
+library(dplyr)
+library(tibble)
+testing <- as_data_frame(read.csv("pml-testing.csv",na.strings = c(""," ","NA")))
+training <- as_data_frame(read.csv("pml-training.csv",na.strings = c(""," ","NA")))
+
+```
+
+##Exploring the data
+Now we look at the attributes of the data sets. There seems to be a large amount of fields having missing values in them. We count the number of NAs for each field.
+
+```{r}
+glimpse(training)
+num_train_NAs <- sapply(training[,1:ncol(training)],FUN=function(f) {
+        x <- complete.cases(f)
+        length(x[x==FALSE])
+})
+table(num_train_NAs)
+```
+
+We can see that 100 fields have very large amount of NAs. Doing the same exercise for testing reveals the exact same pattern. We identify the missing value containing fields by their names.
+
+```{r}
+NA_fields <- names(num_train_NAs[num_train_NAs != 0])
+head(NA_fields)
+```
+
+These fields appear to have been calculated from the raw data by the authors of the original study (see for more details at: http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf). They were using a sliding time window approach to calculate summary statistics. Due to the large number of NAs and also because the testing data set does not contain values for these time-summarised fields either, these fields will not be included in our set of predictors. 
+
+```{r}
+training <- select(training,-one_of(NA_fields))
+```
+
+##Feature selection
+
+We can further reduce the number of predictor variable candidates. The first two variables (X and user_name) should not be used for predicting the quality of the exercise (prediction should be independent of subject or the index of observations). It is also reasonable to assume that the time-related variables are of no relevance here either, because we are not using a time-window based processing. In essence, we can filter out the first 7 columns in our data-frame.
+
+```{r}
+training <- select(training,8:ncol(training))
+```
+
+What we have now are the raw phyisical measurements from the sensors along with the 'classe' variable that denotes the quality of the given exercise. This will be our outcome variable that we want to make predictions on. 
+
+As a next step, we can try and narrow down the list of features by removing redundant variables based on high correlation with other other variables.
+We identify and remove 7 features from out training set.
+
+```{r}
+correlationMatrix <- cor(training[,-53])
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.9)
+length(highlyCorrelated)
+training <- training[,-highlyCorrelated]
+```
+
+Now we are going to apply recursive feature selection to identify the best predictors. We are employing random forest as the modelling algorithm. For cross-validation purposes, we also include resampling by using the k-fold method with 10 folds. Random forest can be computationally intensive to perform, therefore we are also using parallel processing with 3 cores to speed up the process.
+
+```{r}
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+control <- rfeControl(functions=rfFuncs, method="cv", number=10,allowParallel = TRUE)
+results <- rfe(training[,1:45], training[[46]], sizes=c(1:45), rfeControl=control)
+features <- predictors(results)
+stopCluster(cluster)
+```
+
+```{r}
+length(features)
+```
+
+The feature selection resulted in 42 optimal features - we are now subsetting the training data to these variables.
+
+```{r}
+training <- select(training,one_of(features,"classe"))
+```
+
+##Modelling & Accuracy
+
+By utilising the recursive feature selection, we have essentially already created a random forest model with the optimal features. This is contained in our 'results' variable.
+
+```{r}
+print(results$fit)
+```
+
+As we can see the final model is highly accurate, with low classification error rates across each of the categories. The out-of-bag error rate is 0.31% - for random forest, this value can generally be accepted as the estimated out of sample error rate for the model.
+
+When we look at the cross-validated results, we can see that the the error rate is even slightly lower than the estimated oob error rate.
+
+```{r}
+results$resample$Accuracy
+1- mean(results$resample$Accuracy)
+```
+
+##Prediction on Test Data-set
+
+Finally, we perform prediction on the 20 observations contained in the test data-set.
+```{r}
+library(randomForest)
+test_predictions <- predict(results$fit,newdata =testing[,colnames(training[,-ncol(training)])])
+print(test_predictions)
+```
+
+Although the test data-set itself was not labelled and therefore test accuracy cannot be provided, the subsequent submission of results in the relevant Coursera Quiz resulted in <b>100% accurate</b> predictions. 
